@@ -53,17 +53,38 @@ local function charLength(str)
 end
 
 local function pairsByKeys(t, f)
-    local a = {}
-    for n in pairs(t) do table.insert(a, n) end
-    table.sort(a, f)
-    local i = 0
-    local iter = function()
+	local a = {}
+	for n in pairs(t) do table.insert(a, n) end
+	table.sort(a, f)
+	local i = 0
+	local iter = function()
 		i = i + 1
 		if a[i] == nil then return nil
 		else return a[i], t[a[i]]
 		end
 	end
 	return iter
+end
+
+-- Helper function to split text into lines.
+function magiclines(s)
+	if s == nil then s="" end
+	if s:sub(-1)~="\n" then s=s.."\n" end
+	return s:gmatch("(.-)\n")
+end
+
+-- Helper function to trim leading and trailing whitespace.
+function trim(s)
+	return string.gsub(s, "^%s*(.-)%s*$", "%1")
+end
+
+-- Helper function to split text on delimiter.
+function split(s, delimiter)
+	result = {};
+	for match in (s..delimiter):gmatch("(.-)"..delimiter) do
+		table.insert(result, match);
+	end
+	return result;
 end
 
 local function GetXY()
@@ -504,6 +525,38 @@ function cleangroupassigns:FillPlayerBank(newlyAddedName)
 						self.playerBank.dropdownMenu:Show()
 					end
 				end)
+				-- From https://wowwiki-archive.fandom.com/wiki/UIHANDLER_OnDoubleClick:
+				playerLabel.frame.timer = 0
+				playerLabel.frame:SetScript("OnMouseUp", function(...)
+					if playerLabel.frame.timer < time() then
+						playerLabel.frame.startTimer = false
+					end
+					if playerLabel.frame.timer == time() and playerLabel.frame.startTimer then
+						playerLabel.frame.startTimer = false
+
+						if GetMouseButtonClicked() == "LeftButton" then
+							-- OnDoubleClick: Fill first empty spot in arrangements
+							local setFirstEmptyLabel = function()
+								for row = 1, 8 do
+									for col = 1, 5 do
+										local label = labels[row][col]
+										if not label.name then
+											cleangroupassigns:SetLabel(labels[row][col], self.playerBank.scroll.playerLabels[tmpIndex].name)
+											cleangroupassigns:RearrangeGroup(row)
+											return true
+										end
+									end
+								end
+							end
+							if setFirstEmptyLabel() then
+								cleangroupassigns:FillPlayerBank()
+							end
+						end
+					else
+						playerLabel.frame.startTimer = true
+						playerLabel.frame.timer = time()
+					end
+				end)
 
 				local anchorPoint, parentFrame, relativeTo, ptX, ptY
 				playerLabel.frame:EnableMouse(true)
@@ -933,7 +986,7 @@ function cleangroupassigns:OnEnable()
 				self.f:Show()
 			end
 		end,
-	    OnTooltipShow = function(tooltip)
+		OnTooltipShow = function(tooltip)
 			tooltip:SetText("|cFFFF7D0Aclean group assigns|r\n|cFFFF7D0A/cga list|r|cFF24A8FF: Print current arrangements|r\n|cFFFF7D0A/cga go [index]|r|cFF24A8FF: Sort raid group|r")
 			tooltip:Show()
 		end,
@@ -956,6 +1009,147 @@ function cleangroupassigns:OnEnable()
 	self.fetchArrangements.textColor.r = r
 	self.fetchArrangements.textColor.g = g
 	self.fetchArrangements.textColor.b = b
+
+	-- EditBox to read a list of names, optionally divided into groups to 
+	-- copy into arrangements
+	self.copyToArrangementsInput = AceGUI:Create("MultiLineEditBox")
+	self.copyToArrangementsInput:SetWidth(self.raidViews.frame:GetWidth())
+	self.copyToArrangementsInput:SetLabel("Paste Roster")
+	self.copyToArrangementsInput.button:SetText("Copy")
+	self.copyToArrangementsInput:SetCallback("OnTextChanged", function(self, _, value)
+		self:DisableButton(value == "")
+	end)
+	-- 
+	self.copyToArrangementsInput:SetCallback("OnEnterPressed", function()
+		-- Grab value
+		local value = self.copyToArrangementsInput:GetText()
+		self.copyToArrangementsInput:SetText("")
+
+		-- Clean input
+		local lines = {}
+		for line in magiclines(value) do
+			line = trim(line)
+			if line ~= "" then
+				table.insert(lines, line)
+			end
+		end
+
+		-- Check for "Group X" headers in input
+		local groupHeaders = 0
+		for lineno = 1, #lines do
+			line = lines[lineno]
+			if line == "Group 1" then groupHeaders = groupHeaders + 1
+			elseif line == "Group 2" then groupHeaders = groupHeaders + 2
+			elseif line == "Group 3" then groupHeaders = groupHeaders + 3
+			elseif line == "Group 4" then groupHeaders = groupHeaders + 4
+			elseif line == "Group 5" then groupHeaders = groupHeaders + 5
+			elseif line == "Group 6" then groupHeaders = groupHeaders + 6
+			elseif line == "Group 7" then groupHeaders = groupHeaders + 7
+			elseif line == "Group 8" then groupHeaders = groupHeaders + 8
+			end
+		end
+
+		local groups = {}
+		local group = 0
+		-- Only if all 4/8 group headers are present, continue reading names
+		-- into their respective groups
+		if groupHeaders == 10 or groupHeaders == 36 then
+			for lineno = 1, #lines do
+				line = lines[lineno]
+				if line == "Group 1" then group = 1
+				elseif line == "Group 2" then group = 2
+				elseif line == "Group 3" then group = 3
+				elseif line == "Group 4" then group = 4
+				elseif line == "Group 5" then group = 5
+				elseif line == "Group 6" then group = 6
+				elseif line == "Group 7" then group = 7
+				elseif line == "Group 8" then group = 8
+				end
+
+				if groups[group] == nil then
+					groups[group] = {}
+				else
+					-- Even if the original text has tabs in it, split on
+					-- space works fine, the EditBox seems to replace
+					-- pasted tabs with spaces
+					local split_line = split(line, " ")
+					table.insert(groups[group], split_line[#split_line])
+				end
+			end
+		else
+			-- If they are not (all) present, simply assume every line is a
+			-- name and add it to arrangements, ignoring any group headers (just in case)
+			n = 0
+			for lineno = 1, #lines do
+				line = lines[lineno]
+				if line == "Group 1" then
+				elseif line == "Group 2" then
+				elseif line == "Group 3" then
+				elseif line == "Group 4" then
+				elseif line == "Group 5" then
+				elseif line == "Group 6" then
+				elseif line == "Group 7" then
+				elseif line == "Group 8" then
+				else
+					n = n + 1
+					group = math.ceil(n / 5)
+					if groups[group] == nil then groups[group] = {} end
+					-- Even if the original text has tabs in it, split on
+					-- space works fine, the EditBox seems to replace
+					-- pasted tabs with spaces
+					local split_line = split(line, " ")
+					table.insert(groups[group], split_line[#split_line])
+				end
+			end
+		end
+
+		-- Translate "groups" into "newArrangement", basically copying the names
+		-- and replacing name values with {name: .., class: .., classColor: ..}
+		local newArrangement = {}
+		for row = 1, 8 do
+			newArrangement[row] = {}
+			for col = 1, 5 do
+				newArrangement[row][col] = ''
+			end
+		end
+
+		for k, v in ipairs(groups) do
+			for j = 1, #groups[k] do
+				name = groups[k][j]
+				-- Cleanup name so it matches whatever is in the playerBank
+				local cLen = charLength(name)
+				name = string.sub(name, 1, cLen):upper() .. string.sub(name, cLen + 1):lower()
+
+				-- Build entry with name and class(Color)
+				newArrangement[k][j] = {}
+				newArrangement[k][j].name = name
+				newArrangement[k][j].class = nil
+
+				-- Find class(Color)
+				class = FindClass(name)
+				if class then
+					newArrangement[k][j].class = class
+					newArrangement[k][j].classColor = RAID_CLASS_COLORS[class:upper()]
+				else
+					newArrangement[k][j].classColor = {
+						r = 0.0, g = 1.0, b = 0.0
+					}
+				end
+			end
+		end
+
+		-- Fill in the actual arrangements
+		self:ClearAllLabels()
+		for row = 1, 8 do
+			for col = 1, 5 do
+				local entry = newArrangement[row][col]
+				AddToPlayerTable(entry.name, entry.class)
+				self:SetLabel(labels[row][col], entry.name)
+			end
+		end
+		self:FillPlayerBank()
+		self:CheckArrangable()
+	end)
 
 	self.arrangementsDrowndownMenu = _G["cleangroupassignsDropdownMenu"]:New()
 	self.arrangementsDrowndownMenu:AddItem("Delete", function()
@@ -1148,6 +1342,8 @@ function cleangroupassigns:OnEnable()
 	AceGUI:RegisterLayout("MainLayout", function()
 		self.raidViews:SetPoint("TOPLEFT", self.f.frame, "TOPLEFT", 10, -28)
 		self.fetchArrangements:SetPoint("TOPLEFT", self.raidViews.frame, "BOTTOMLEFT", 0, -14)
+		self.copyToArrangementsInput:SetPoint("TOPLEFT", self.fetchArrangements.frame, "BOTTOMLEFT", 2, -2)
+		self.copyToArrangementsInput:SetHeight(84)
 		self.playerBar:SetHeight(42)
 		self.playerBank:SetPoint("TOPLEFT", self.raidViews.frame, "TOPRIGHT", 2, 0)
 		self.playerBank:SetHeight(self.raidViews.frame:GetHeight())
@@ -1156,7 +1352,7 @@ function cleangroupassigns:OnEnable()
 		self.filterCheck:SetPoint("TOPLEFT", self.filterRank.frame, "BOTTOMLEFT", 0, -2)
 
 		self.f:SetWidth(744)
-		self.f:SetHeight(590)
+		self.f:SetHeight(632)
 		raidGroups[1]:SetPoint("TOPLEFT", self.playerBank.frame, "TOPRIGHT", 2, 0)
 		raidGroups[2]:SetPoint("TOPLEFT", raidGroups[1].frame, "TOPRIGHT", 2, 0)
 		raidGroups[3]:SetPoint("TOPLEFT", raidGroups[1].frame, "BOTTOMLEFT", 0, 0)
@@ -1184,6 +1380,7 @@ function cleangroupassigns:OnEnable()
 	self:PopulateArrangements()
 	self.f:AddChild(self.raidViews)
 	self.f:AddChild(self.fetchArrangements)
+	self.f:AddChild(self.copyToArrangementsInput)
 	self.f:AddChild(self.playerBar)
 	self.f:AddChild(self.playerBank)
 	self.f:AddChild(self.filterRank)
